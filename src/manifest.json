@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Tatkal Booking Assistant",
+  "version": "1.0.0",
+  "description": "Personal assistant for fast IRCTC Tatkal ticket booking",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.irctc.co.in/*",
+    "https://irctc.co.in/*"
+  ],
+  "background": {
+    "service_worker": "./background/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.irctc.co.in/*",
+        "https://irctc.co.in/*"
+      ],
+      "js": ["./content/injector.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  }
+}

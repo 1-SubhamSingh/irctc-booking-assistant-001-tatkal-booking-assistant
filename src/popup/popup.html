@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tatkal Booking Assistant</title>
+  <link rel="stylesheet" href="../assets/styles/popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Unlock Screen -->
+    <div id="unlock-screen" class="screen active">
+      <h2>🔒 Tatkal Assistant</h2>
+      <input type="password" id="master-password" placeholder="Master Password" autocomplete="off">
+      <button id="unlock-btn" class="btn-primary">Unlock</button>
+      <p id="unlock-error" class="error hidden"></p>
+      <p class="hint">First time? Enter a new master password to set up.</p>
+    </div>
+
+    <!-- Main Screen (hidden until unlocked) -->
+    <div id="main-screen" class="screen hidden">
+      <nav class="tabs">
+        <button class="tab active" data-tab="templates">Templates</button>
+        <button class="tab" data-tab="settings">Settings</button>
+        <button class="tab" data-tab="status">Status</button>
+      </nav>
+
+      <!-- Templates Tab -->
+      <div id="tab-templates" class="tab-content active">
+        <div id="template-list"></div>
+        <button id="new-template-btn" class="btn-secondary">+ New Template</button>
+
+        <!-- Template Form (hidden by default) -->
+        <div id="template-form" class="hidden">
+          <h3>Booking Template</h3>
+          <input type="text" id="template-name" placeholder="Template Name (e.g., Delhi to Patna)">
+
+          <fieldset>
+            <legend>Journey Details</legend>
+            <div id="journey-form-container"></div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Passengers</legend>
+            <div id="passenger-form-container"></div>
+            <button id="add-passenger-btn" class="btn-secondary">+ Add Passenger</button>
+          </fieldset>
+
+          <div class="form-actions">
+            <button id="save-template-btn" class="btn-primary">Save Template</button>
+            <button id="cancel-template-btn" class="btn-secondary">Cancel</button>
+          </div>
+        </div>
+
+        <!-- Arm Booking Section -->
+        <div id="arm-section" class="hidden">
+          <hr>
+          <button id="arm-btn" class="arm-btn disarmed">🟢 ARM BOOKING</button>
+          <button id="test-now-btn" class="btn-secondary" style="margin-top:8px;">⚡ Test Now (Skip Timer)</button>
+          <p id="arm-status" class="status-msg hidden"></p>
+        </div>
+      </div>
+
+      <!-- Settings Tab -->
+      <div id="tab-settings" class="tab-content hidden">
+        <div id="settings-container"></div>
+      </div>
+
+      <!-- Status Tab -->
+      <div id="tab-status" class="tab-content hidden">
+        <div id="status-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./popup.ts"></script>
+</body>
+</html>
