@@ -1,187 +1,506 @@
-// Login page automator - click login button, fill username, password, handle CAPTCHA, submit
 
 import { SELECTORS } from '../../shared/constants';
 import { waitForElement, setInputValue } from '../injector';
 import type { ExtensionResponse } from '../../shared/types';
 
-export async function handleLogin(payload: { username: string; password: string }): Promise<ExtensionResponse> {
-  try {
-    console.log('[TBA-Login] Starting login automation...');
-
-    // Step 1: Check if login form is already visible
-    let usernameInput = document.querySelector(SELECTORS.LOGIN_USERNAME) as HTMLInputElement;
-
-    if (!usernameInput) {
-      // Need to click the LOGIN button first to open the login modal
-      console.log('[TBA-Login] Login form not visible, clicking LOGIN button...');
-      const loginBtn = document.querySelector(
-        'a.search_btn.loginText, a[aria-label="Click here to Login"], a.loginText, ' +
-        'a[href*="login"], button.login-btn, a.log_in, ' +
-        'li.loginli a, a.dropdown-toggle.login'
-      ) as HTMLElement;
-
-      if (!loginBtn) {
-        // Try finding by text content
-        const allLinks = document.querySelectorAll('a, button');
-        let found = false;
-        for (const link of allLinks) {
-          const text = link.textContent?.trim().toUpperCase() ?? '';
-          if (text === 'LOGIN' || text === 'SIGN IN' || text === 'LOG IN') {
-            console.log('[TBA-Login] Found login button by text:', text);
-            (link as HTMLElement).click();
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          return { success: false, error: 'Login button not found on page' };
-        }
-      } else {
-        console.log('[TBA-Login] Clicking login button');
-        loginBtn.click();
-      }
-
-      // Wait for login form to appear
-      await delay(1500);
-      usernameInput = await waitForElement(SELECTORS.LOGIN_USERNAME, 10000) as HTMLInputElement;
-      if (!usernameInput) {
-        return { success: false, error: 'Login form did not appear after clicking LOGIN button' };
-      }
-    }
-
-    console.log('[TBA-Login] Found username field, filling credentials...');
-
-    // Step 2: Fill credentials - focus + fill with delays like a real user
-    usernameInput.click();
-    await delay(200);
-    setInputValue(usernameInput, payload.username);
-    await delay(500);
-
-    const passwordInput = document.querySelector(SELECTORS.LOGIN_PASSWORD) as HTMLInputElement;
-    if (!passwordInput) {
-      return { success: false, error: 'Password field not found' };
-    }
-    passwordInput.click();
-    await delay(200);
-    setInputValue(passwordInput, payload.password);
-    await delay(500);
-
-    // Verify values are actually set
-    console.log('[TBA-Login] Credentials filled, verifying...');
-    console.log('[TBA-Login] Username value length:', usernameInput.value.length);
-    console.log('[TBA-Login] Password value length:', passwordInput.value.length);
-
-    if (!usernameInput.value || !passwordInput.value) {
-      console.error('[TBA-Login] Values did not stick! Trying alternative method...');
-      // Alternative: use Object.getOwnPropertyDescriptor directly
-      usernameInput.setAttribute('value', payload.username);
-      usernameInput.value = payload.username;
-      usernameInput.dispatchEvent(new InputEvent('input', { bubbles: true, data: payload.username, inputType: 'insertText' }));
-      passwordInput.setAttribute('value', payload.password);
-      passwordInput.value = payload.password;
-      passwordInput.dispatchEvent(new InputEvent('input', { bubbles: true, data: payload.password, inputType: 'insertText' }));
-      await delay(300);
-    }
-
-    // Step 3: Wait for CAPTCHA to appear (IRCTC loads it with a delay)
-    await delay(1000);
-    const captchaImg = document.querySelector(
-      SELECTORS.LOGIN_CAPTCHA_IMG + ', img[class*="captcha"], .login-captcha img, ' +
-      '.captcha img, img[alt*="captcha"], img[alt*="nlp"], canvas.captcha'
-    ) as HTMLImageElement;
-
-    // Also check for NLP/text-based captcha question
-    const nlpCaptcha = document.querySelector(
-      'span.nlp-captcha, .captcha-text, label[for*="captcha"], ' +
-      'span[class*="caption"], .loginCaptcha, .nlpQues'
-    );
-
-    const captchaInput = document.querySelector(
-      SELECTORS.LOGIN_CAPTCHA_INPUT + ', input[placeholder*="captcha" i], ' +
-      'input[placeholder*="answer" i], input#nlpAnswer, input[name="captcha"]'
-    ) as HTMLInputElement;
-
-    if (captchaImg || nlpCaptcha || captchaInput) {
-      console.log('[TBA-Login] CAPTCHA detected!', {
-        hasImage: !!captchaImg,
-        hasNlp: !!nlpCaptcha,
-        hasInput: !!captchaInput,
-        nlpText: nlpCaptcha?.textContent?.trim(),
-      });
-      // Notify background to solve CAPTCHA
-      return { success: true, data: { captchaRequired: true, nlpText: nlpCaptcha?.textContent?.trim() } };
-    }
-
-    // Step 4: No CAPTCHA found — find SIGN IN button inside login modal (not the Search Trains button)
-    console.log('[TBA-Login] No CAPTCHA detected, submitting...');
-
-    // Find the login form/modal container that has our username field
-    const loginForm = usernameInput.closest('form') || usernameInput.closest('.modal-body, .modal-content, .login-container, .ui-dialog-content, app-login');
-    console.log('[TBA-Login] Login form container found:', !!loginForm, loginForm?.tagName, loginForm?.className?.substring(0, 50));
-
-    let submitBtn: HTMLButtonElement | null = null;
-
-    if (loginForm) {
-      // Look for submit button INSIDE the login form only
-      submitBtn = loginForm.querySelector(
-        'button[type="submit"], button.search_btn, button.login_btn, button.login_text'
-      ) as HTMLButtonElement;
-    }
-
-    // Fallback: find button by text content "SIGN IN" or "LOGIN"
-    if (!submitBtn) {
-      const allBtns = document.querySelectorAll('button');
-      for (const btn of allBtns) {
-        const text = btn.textContent?.trim().toUpperCase() ?? '';
-        if (text === 'SIGN IN' || text === 'LOGIN' || text === 'LOG IN' || text === 'SUBMIT') {
-          // Make sure it's NOT the "Search Trains" button
-          if (!text.includes('SEARCH') && !text.includes('TRAIN')) {
-            submitBtn = btn as HTMLButtonElement;
-            break;
-          }
-        }
-      }
-    }
-
-    if (submitBtn) {
-      console.log('[TBA-Login] Submit button found:', submitBtn.textContent?.trim());
-      submitBtn.click();
-      // Wait for response
-      await delay(3000);
-
-      // Check for error messages on page
-      const errorMsg = document.querySelector(
-        '.loginError, .error-message, .alert-danger, p-toast .p-toast-message, ' +
-        '.ui-toast-message, .ng-trigger-overlayContentAnimation, .login-error'
-      );
-      if (errorMsg) {
-        console.log('[TBA-Login] Error after submit:', errorMsg.textContent?.trim());
-      }
-
-      // Check if CAPTCHA appeared after click
-      const captchaAfterSubmit = document.querySelector(
-        'img[class*="captcha"], .captcha img, input[placeholder*="captcha" i], ' +
-        'input#nlpAnswer, input[name="captcha"], .nlpQues'
-      );
-      if (captchaAfterSubmit) {
-        console.log('[TBA-Login] CAPTCHA appeared after submit attempt');
-        return { success: true, data: { captchaRequired: true } };
-      }
-    } else {
-      console.error('[TBA-Login] Sign In button NOT found in login modal!');
-      const allBtns = document.querySelectorAll('button');
-      allBtns.forEach((btn, i) => {
-        console.log(`[TBA-Login] Button[${i}]:`, btn.type, btn.className?.substring(0, 40), `"${btn.textContent?.trim().substring(0, 30)}"`);
-      });
-    }
-
-    return { success: true, data: { captchaRequired: false } };
-  } catch (e) {
-    console.error('[TBA-Login] Error:', (e as Error).message);
-    return { success: false, error: `Login automation failed: ${(e as Error).message}` };
-  }
+interface LoginPayload {
+  username: string;
+  password: string;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const TIMEOUT = {
+  loginForm: 8000,
+  captcha: 1200,
+  loginResponse: 3000,
+};
+
+const CAPTCHA_IMAGE_SELECTOR = [
+  SELECTORS.LOGIN_CAPTCHA_IMG,
+  'img[class*="captcha"]',
+  '.login-captcha img',
+  '.captcha img',
+  'img[alt*="captcha" i]',
+  'img[alt*="nlp" i]',
+  'canvas.captcha',
+].join(', ');
+
+const CAPTCHA_TEXT_SELECTOR = [
+  'span.nlp-captcha',
+  '.captcha-text',
+  'label[for*="captcha"]',
+  'span[class*="caption"]',
+  '.loginCaptcha',
+  '.nlpQues',
+].join(', ');
+
+const CAPTCHA_INPUT_SELECTOR = [
+  SELECTORS.LOGIN_CAPTCHA_INPUT,
+  'input[placeholder*="captcha" i]',
+  'input[placeholder*="answer" i]',
+  'input#nlpAnswer',
+  'input[name="captcha"]',
+].join(', ');
+
+const LOGIN_BUTTON_SELECTOR = [
+  'a.search_btn.loginText',
+  'a[aria-label="Click here to Login"]',
+  'a.loginText',
+  'a[href*="login"]',
+  'button.login-btn',
+  'a.log_in',
+  'li.loginli a',
+  'a.dropdown-toggle.login',
+].join(', ');
+
+const SUBMIT_BUTTON_SELECTOR = [
+  'button[type="submit"]',
+  'button.search_btn',
+  'button.login_btn',
+  'button.login_text',
+].join(', ');
+
+const ERROR_SELECTOR = [
+  '.loginError',
+  '.error-message',
+  '.alert-danger',
+  'p-toast .p-toast-message',
+  '.ui-toast-message',
+  '.login-error',
+].join(', ');
+
+function isVisible(element: Element): boolean {
+  const html = element as HTMLElement;
+
+  return (
+    html.isConnected &&
+    html.getClientRects().length > 0 &&
+    getComputedStyle(html).visibility !== 'hidden' &&
+    getComputedStyle(html).display !== 'none'
+  );
+}
+
+/**
+ * Wait for a DOM condition instead of fixed delays.
+ */
+function waitForCondition<T>(
+  condition: () => T | null | undefined | false,
+  timeout = 3000
+): Promise<T | null> {
+  const initial = condition();
+
+  if (initial) {
+    return Promise.resolve(initial as T);
+  }
+
+  return new Promise(resolve => {
+    const root = document.body;
+
+    if (!root) {
+      resolve(null);
+      return;
+    }
+
+    let finished = false;
+
+    const observer = new MutationObserver(() => {
+      check();
+    });
+
+    const timer = setTimeout(() => {
+      finish(null);
+    }, timeout);
+
+    function finish(result: T | null) {
+      if (finished) return;
+
+      finished = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve(result);
+    }
+
+    function check() {
+      const result = condition();
+
+      if (result) {
+        finish(result as T);
+      }
+    }
+
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: [
+        'class',
+        'style',
+        'disabled',
+        'aria-hidden',
+        'aria-invalid',
+      ],
+    });
+
+    // Catch changes between initial check and observer setup.
+    check();
+  });
+}
+
+/**
+ * Find login button.
+ */
+function findLoginButton(): HTMLElement | null {
+  const preferred = document.querySelectorAll(
+    LOGIN_BUTTON_SELECTOR
+  );
+
+  for (const button of preferred) {
+    if (isVisible(button)) {
+      return button as HTMLElement;
+    }
+  }
+
+  // Text fallback.
+  const elements = document.querySelectorAll('a, button');
+
+  for (const element of elements) {
+    const text = element.textContent?.trim().toUpperCase();
+
+    if (
+      isVisible(element) &&
+      ['LOGIN', 'SIGN IN', 'LOG IN'].includes(text || '')
+    ) {
+      return element as HTMLElement;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find visible CAPTCHA elements.
+ */
+function findCaptcha(): {
+  detected: boolean;
+  nlpText?: string;
+} {
+  const captchaImage = Array.from(
+    document.querySelectorAll(CAPTCHA_IMAGE_SELECTOR)
+  ).some(isVisible);
+
+  const nlpCaptcha = Array.from(
+    document.querySelectorAll(CAPTCHA_TEXT_SELECTOR)
+  ).find(isVisible);
+
+  const captchaInput = Array.from(
+    document.querySelectorAll(CAPTCHA_INPUT_SELECTOR)
+  ).some(isVisible);
+
+  const detected = captchaImage || !!nlpCaptcha || captchaInput;
+
+  return {
+    detected,
+    nlpText: nlpCaptcha?.textContent?.trim() || undefined,
+  };
+}
+
+/**
+ * Locate the login modal containing the username input.
+ */
+function findLoginContainer(
+  usernameInput: HTMLInputElement
+): Element | null {
+  return (
+    usernameInput.closest('form') ||
+    usernameInput.closest(
+      '.modal-body, .modal-content, .login-container, ' +
+      '.ui-dialog-content, app-login'
+    )
+  );
+}
+
+/**
+ * Find the actual Sign In button.
+ */
+function findSubmitButton(
+  loginContainer: Element
+): HTMLButtonElement | null {
+  const preferred = loginContainer.querySelectorAll(
+    SUBMIT_BUTTON_SELECTOR
+  );
+
+  for (const button of preferred) {
+    const btn = button as HTMLButtonElement;
+
+    if (isVisible(btn) && !btn.disabled) {
+      return btn;
+    }
+  }
+
+  // Text fallback, scoped to login container.
+  const buttons = loginContainer.querySelectorAll('button');
+
+  for (const button of buttons) {
+    const text = button.textContent?.trim().toUpperCase();
+
+    if (
+      isVisible(button) &&
+      !(button as HTMLButtonElement).disabled &&
+      ['SIGN IN', 'LOGIN', 'LOG IN', 'SUBMIT'].includes(text || '')
+    ) {
+      return button as HTMLButtonElement;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find visible login errors.
+ */
+function findLoginError(): string | null {
+  const errors = document.querySelectorAll(ERROR_SELECTOR);
+
+  for (const error of errors) {
+    if (isVisible(error) && error.textContent?.trim()) {
+      return error.textContent.trim();
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Main login automation.
+ */
+export async function handleLogin(
+  payload: LoginPayload
+): Promise<ExtensionResponse> {
+  try {
+    console.log('[TBA-Login] Starting login automation');
+
+    if (!payload.username || !payload.password) {
+      return {
+        success: false,
+        error: 'Username and password are required',
+      };
+    }
+
+    // STEP 1: Find login form.
+    let usernameInput = document.querySelector(
+      SELECTORS.LOGIN_USERNAME
+    ) as HTMLInputElement | null;
+
+    // STEP 2: Open login modal if necessary.
+    if (!usernameInput || !isVisible(usernameInput)) {
+      console.log('[TBA-Login] Opening login modal');
+
+      const loginButton = findLoginButton();
+
+      if (!loginButton) {
+        return {
+          success: false,
+          error: 'Login button not found on page',
+        };
+      }
+
+      loginButton.click();
+
+      usernameInput = await waitForCondition(
+        () => {
+          const input = document.querySelector(
+            SELECTORS.LOGIN_USERNAME
+          ) as HTMLInputElement | null;
+
+          return input && isVisible(input) ? input : null;
+        },
+        TIMEOUT.loginForm
+      );
+
+      if (!usernameInput) {
+        return {
+          success: false,
+          error: 'Login form did not appear after clicking LOGIN',
+        };
+      }
+    }
+
+    console.log('[TBA-Login] Login form found');
+
+    // STEP 3: Fill username.
+    usernameInput.focus();
+    setInputValue(usernameInput, payload.username);
+
+    // Verify username.
+    if (usernameInput.value !== payload.username) {
+      return {
+        success: false,
+        error: 'Could not populate username field',
+      };
+    }
+
+    // STEP 4: Fill password.
+    const passwordInput = await waitForCondition(
+      () => {
+        const input = document.querySelector(
+          SELECTORS.LOGIN_PASSWORD
+        ) as HTMLInputElement | null;
+
+        return input && isVisible(input) ? input : null;
+      },
+      2000
+    );
+
+    if (!passwordInput) {
+      return {
+        success: false,
+        error: 'Password field not found',
+      };
+    }
+
+    passwordInput.focus();
+    setInputValue(passwordInput, payload.password);
+
+    // Verify credentials without logging their values.
+    if (
+      usernameInput.value !== payload.username ||
+      passwordInput.value !== payload.password
+    ) {
+      return {
+        success: false,
+        error: 'Credential fields could not be populated correctly',
+      };
+    }
+
+    console.log('[TBA-Login] Credentials populated successfully');
+
+    // STEP 5: Detect CAPTCHA.
+    // Check immediately first, then briefly wait for dynamically
+    // rendered CAPTCHA elements.
+    let captcha = findCaptcha();
+
+    if (!captcha.detected) {
+      await waitForCondition(
+        () => {
+          const result = findCaptcha();
+          return result.detected ? result : null;
+        },
+        TIMEOUT.captcha
+      );
+
+      captcha = findCaptcha();
+    }
+
+    if (captcha.detected) {
+      console.log('[TBA-Login] CAPTCHA detected');
+
+      return {
+        success: true,
+        data: {
+          captchaRequired: true,
+          nlpText: captcha.nlpText,
+        },
+      };
+    }
+
+    // STEP 6: Find login modal.
+    const loginContainer = findLoginContainer(usernameInput);
+
+    if (!loginContainer) {
+      return {
+        success: false,
+        error: 'Login form container not found',
+      };
+    }
+
+    // STEP 7: Find Sign In button.
+    const submitButton = findSubmitButton(loginContainer);
+
+    if (!submitButton) {
+      return {
+        success: false,
+        error: 'Sign In button not found in login modal',
+      };
+    }
+
+    console.log('[TBA-Login] Submitting login');
+
+    submitButton.click();
+
+    // STEP 8: Wait for a meaningful response.
+    const response = await waitForCondition(() => {
+      const captchaResult = findCaptcha();
+      const error = findLoginError();
+
+      const formStillVisible = isVisible(usernameInput);
+
+      if (captchaResult.detected) {
+        return {
+          captchaRequired: true,
+          nlpText: captchaResult.nlpText,
+          error: null,
+        };
+      }
+
+      if (error) {
+        return {
+          captchaRequired: false,
+          error,
+        };
+      }
+
+      // The login modal disappearing is a possible success signal,
+      // but is not definitive proof of authentication.
+      if (!formStillVisible) {
+        return {
+          captchaRequired: false,
+          error: null,
+        };
+      }
+
+      return null;
+    }, TIMEOUT.loginResponse);
+
+    if (response?.captchaRequired) {
+      console.log('[TBA-Login] CAPTCHA appeared after submission');
+
+      return {
+        success: true,
+        data: {
+          captchaRequired: true,
+          nlpText: response.nlpText,
+        },
+      };
+    }
+
+    if (response?.error) {
+      console.warn('[TBA-Login] Login error:', response.error);
+
+      return {
+        success: false,
+        error: response.error,
+      };
+    }
+
+    console.log(
+      '[TBA-Login] Login submission completed; authentication should be verified separately'
+    );
+
+    return {
+      success: true,
+      data: {
+        captchaRequired: false,
+      },
+    };
+
+  } catch (error) {
+    console.error('[TBA-Login] Automation failed:', error);
+
+    return {
+      success: false,
+      error: `Login automation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
 }
