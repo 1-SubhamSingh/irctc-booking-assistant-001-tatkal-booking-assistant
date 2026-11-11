@@ -1,4 +1,3 @@
-// Train selection page automator - find the target train and click Book Now
 
 import { SELECTORS } from '../../shared/constants';
 import { waitForElement } from '../injector';
@@ -11,188 +10,387 @@ interface TrainSelectPayload {
   journeyDate?: string;
 }
 
-export async function handleTrainSelect(payload: TrainSelectPayload): Promise<ExtensionResponse> {
-  try {
-    console.log('[TBA-Train] Looking for train:', payload.trainNumber, 'class:', payload.classType);
+const TIMEOUTS = {
+  trainList: 10000,
+  availability: 6000,
+  bookButton: 5000,
+};
 
-    // Wait for train list to load
-    const trainList = await waitForElement(SELECTORS.TRAIN_LIST_CONTAINER);
+const CLASS_SELECTORS = [
+  'td.pre-avl',
+  '.pre-avl',
+  'td[class*="avl"]',
+  '.classTd',
+  'table.train-avl td',
+  '.seat-class-box',
+].join(', ');
+
+const DATE_CELL_SELECTOR = 'div.pre-avl, td.link div.pre-avl';
+
+const BOOK_BUTTON_SELECTOR = [
+  'button.btnDefault',
+  'button.book-btn',
+  'button[class*="book"]',
+].join(', ');
+
+/**
+ * Wait until a DOM condition becomes true.
+ * Uses MutationObserver rather than repeated fixed delays.
+ */
+function waitForCondition<T>(
+  condition: () => T | null | undefined | false,
+  timeout = 5000,
+  root: Node = document.body
+): Promise<T | null> {
+  const initial = condition();
+  if (initial) return Promise.resolve(initial);
+
+  return new Promise((resolve) => {
+    let observer: MutationObserver;
+
+    const finish = (result: T | null) => {
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    observer = new MutationObserver(() => {
+      const result = condition();
+      if (result) finish(result);
+    });
+
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+    });
+
+    const timer = setTimeout(() => finish(null), timeout);
+
+    // Handle a DOM change between the initial check and observer setup.
+    const result = condition();
+    if (result) finish(result);
+  });
+}
+
+function isVisible(element: Element): boolean {
+  const htmlElement = element as HTMLElement;
+
+  return (
+    htmlElement.isConnected &&
+    htmlElement.getClientRects().length > 0 &&
+    getComputedStyle(htmlElement).visibility !== 'hidden'
+  );
+}
+
+function clickElement(element: Element): void {
+  (element as HTMLElement).click();
+}
+
+/**
+ * Match train number as a complete numeric token.
+ * Avoids matching 12345 when the requested number is 1234.
+ */
+function matchesTrainNumber(text: string, trainNumber: string): boolean {
+  const escaped = trainNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|\\D)${escaped}(\\D|$)`).test(text);
+}
+
+/**
+ * Parse YYYY-MM-DD without timezone-related date shifts.
+ */
+function parseJourneyDate(date?: string) {
+  if (!date) return null;
+
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) return null;
+
+  return {
+    day: Number(match[3]),
+    month: Number(match[2]),
+  };
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4,
+  may: 5, jun: 6, jul: 7, aug: 8,
+  sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+/**
+ * Match a displayed availability date.
+ */
+function matchesJourneyDate(
+  text: string,
+  target: { day: number; month: number }
+): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+
+  const dayRegex = new RegExp(
+    `(^|\\D)${target.day}(\\D|$)`
+  );
+
+  if (!dayRegex.test(normalized)) return false;
+
+  const monthMatch = normalized.match(
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i
+  );
+
+  // If the page displays a month, verify it too.
+  if (monthMatch) {
+    return MONTHS[monthMatch[1].slice(0, 3).toLowerCase()] === target.month;
+  }
+
+  // Some layouts display only the day number.
+  return true;
+}
+
+function findTrainCard(trainNumber: string): Element | null {
+  const cards = document.querySelectorAll(
+    `${SELECTORS.TRAIN_ITEM}, .train-card, app-train-avl-enq`
+  );
+
+  for (const card of cards) {
+    if (
+      isVisible(card) &&
+      matchesTrainNumber(card.textContent || '', trainNumber)
+    ) {
+      return card;
+    }
+  }
+
+  // Heading fallback.
+  const headings = document.querySelectorAll(
+    'strong, .train-heading, .trainName'
+  );
+
+  for (const heading of headings) {
+    if (!matchesTrainNumber(heading.textContent || '', trainNumber)) {
+      continue;
+    }
+
+    const card = heading.closest(
+      '.form-group, .train-card, app-train-avl-enq, .col-xs-12'
+    );
+
+    if (
+      card &&
+      isVisible(card) &&
+      matchesTrainNumber(card.textContent || '', trainNumber)
+    ) {
+      return card;
+    }
+  }
+
+  return null;
+}
+
+function findClassBox(
+  trainRow: Element,
+  classCode: string
+): Element | null {
+  const escaped = classCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const classRegex = new RegExp(`\\(${escaped}\\)`, 'i');
+
+  const boxes = trainRow.querySelectorAll(CLASS_SELECTORS);
+
+  for (const box of boxes) {
+    const text = box.textContent?.trim() || '';
+
+    if (
+      isVisible(box) &&
+      (text === classCode || classRegex.test(text))
+    ) {
+      return box;
+    }
+  }
+
+  // Fallback: inspect smaller elements only.
+  const elements = trainRow.querySelectorAll('td, div, span, a');
+
+  for (const element of elements) {
+    const text = element.textContent?.trim() || '';
+
+    if (
+      isVisible(element) &&
+      element.children.length < 5 &&
+      classRegex.test(text)
+    ) {
+      return element;
+    }
+  }
+
+  return null;
+}
+
+function findAvailabilityCell(
+  trainRow: Element,
+  journeyDate?: string
+): Element | null {
+  const targetDate = parseJourneyDate(journeyDate);
+
+  const cells = trainRow.querySelectorAll(DATE_CELL_SELECTOR);
+
+  for (const cell of cells) {
+    if (!isVisible(cell)) continue;
+
+    const parentTd = cell.closest('td');
+    const text = parentTd?.textContent || cell.textContent || '';
+
+    if (text.toUpperCase().includes('NOT AVAILABLE')) {
+      continue;
+    }
+
+    if (targetDate) {
+      if (matchesJourneyDate(text, targetDate)) {
+        return cell;
+      }
+    } else {
+      return cell;
+    }
+  }
+
+  return null;
+}
+
+function findBookButton(trainRow: Element): HTMLButtonElement | null {
+  const buttons = trainRow.querySelectorAll<HTMLButtonElement>(
+    `${BOOK_BUTTON_SELECTOR}, button`
+  );
+
+  for (const button of buttons) {
+    const text = button.textContent?.trim().toUpperCase() || '';
+
+    if (
+      isVisible(button) &&
+      !button.disabled &&
+      text.includes('BOOK NOW')
+    ) {
+      return button;
+    }
+  }
+
+  return null;
+}
+
+export async function handleTrainSelect(
+  payload: TrainSelectPayload
+): Promise<ExtensionResponse> {
+  try {
+    console.log(
+      '[TBA-Train] Selecting train:',
+      payload.trainNumber,
+      'Class:',
+      payload.classType,
+      'Date:',
+      payload.journeyDate
+    );
+
+    // Validate input.
+    if (!/^\d+$/.test(payload.trainNumber)) {
+      return { success: false, error: 'Invalid train number' };
+    }
+
+    if (!payload.classType?.trim()) {
+      return { success: false, error: 'Class type is required' };
+    }
+
+    if (
+      payload.journeyDate &&
+      !parseJourneyDate(payload.journeyDate)
+    ) {
+      return { success: false, error: 'Invalid journey date format. Expected YYYY-MM-DD' };
+    }
+
+    // STEP 1: Wait for train list.
+    const trainList = await waitForElement(
+      SELECTORS.TRAIN_LIST_CONTAINER
+    );
+
     if (!trainList) {
       return { success: false, error: 'Train list did not load' };
     }
 
-    await delay(1000); // Allow Angular rendering
-
-    // Find the target train by number - search in the entire page
-    const allTrainCards = document.querySelectorAll(SELECTORS.TRAIN_ITEM + ', .train-card, app-train-avl-enq');
-    console.log('[TBA-Train] Found', allTrainCards.length, 'train cards');
-
-    let targetRow: Element | null = null;
-
-    for (const row of allTrainCards) {
-      const text = row.textContent || '';
-      if (text.includes(payload.trainNumber) || text.includes(`(${payload.trainNumber})`)) {
-        targetRow = row;
-        console.log('[TBA-Train] Found target train card');
-        break;
-      }
-    }
-
-    // Fallback: search by strong/heading elements
-    if (!targetRow) {
-      const headings = document.querySelectorAll('strong, .train-heading, .trainName');
-      for (const heading of headings) {
-        if (heading.textContent?.includes(payload.trainNumber)) {
-          // Go up to the train card container
-          targetRow = heading.closest('.form-group, .train-card, app-train-avl-enq, .col-xs-12') || heading.parentElement?.parentElement || null;
-          console.log('[TBA-Train] Found train via heading');
-          break;
-        }
-      }
-    }
-
-    if (!targetRow) {
-      console.error('[TBA-Train] Train not found. Page text sample:', document.body.textContent?.substring(0, 500));
-      return { success: false, error: `Train ${payload.trainNumber} not found in results` };
-    }
-
-    // Step 1: Click the class box (e.g., "AC 3 Tier (3A)")
-    // On IRCTC, each class is shown as a clickable box/td with text like "AC 3 Tier (3A)\nRefresh"
-    const classCode = payload.classType; // e.g., "3A"
-    const allClassBoxes = targetRow.querySelectorAll(
-      'td.pre-avl, .pre-avl, td[class*="avl"], .classTd, table.train-avl td, .seat-class-box, div[class*="class"]'
+    // STEP 2: Find exact train.
+    const targetRow = await waitForCondition(
+      () => findTrainCard(payload.trainNumber),
+      TIMEOUTS.trainList
     );
-    console.log('[TBA-Train] Class boxes found:', allClassBoxes.length);
 
-    let classClicked = false;
-    for (const box of allClassBoxes) {
-      const boxText = box.textContent?.trim() || '';
-      // Match by class code in parentheses, e.g., "(3A)" or just "3A"
-      if (boxText.includes(`(${classCode})`) || boxText === classCode) {
-        console.log('[TBA-Train] Clicking class box:', boxText.substring(0, 30));
-        (box as HTMLElement).click();
-        classClicked = true;
-        break;
-      }
+    if (!targetRow) {
+      return {
+        success: false,
+        error: `Train ${payload.trainNumber} not found in results`,
+      };
     }
 
-    // Broader fallback: search any clickable element with class code text
-    if (!classClicked) {
-      const allElements = targetRow.querySelectorAll('td, div, span, a');
-      for (const el of allElements) {
-        const text = el.textContent?.trim() || '';
-        if (text.includes(`(${classCode})`) && !text.includes('Refresh C') && el.children.length < 5) {
-          console.log('[TBA-Train] Clicking class element (fallback):', text.substring(0, 40));
-          (el as HTMLElement).click();
-          classClicked = true;
-          break;
-        }
-      }
+    console.log('[TBA-Train] Target train found');
+
+    // STEP 3: Select class.
+    const classBox = findClassBox(targetRow, payload.classType);
+
+    if (!classBox) {
+      return {
+        success: false,
+        error: `Class ${payload.classType} not found for train ${payload.trainNumber}`,
+      };
     }
 
-    if (!classClicked) {
-      console.warn('[TBA-Train] Could not find class box for', classCode);
-      // Log all available class boxes for debugging
-      allClassBoxes.forEach((box, i) => {
-        console.log(`[TBA-Train] Box[${i}]:`, box.textContent?.trim().substring(0, 30));
-      });
+    console.log('[TBA-Train] Selecting class:', payload.classType);
+
+    clickElement(classBox);
+
+    // STEP 4: Wait for availability.
+    const availabilityCell = await waitForCondition(
+      () => findAvailabilityCell(targetRow, payload.journeyDate),
+      TIMEOUTS.availability,
+      targetRow
+    );
+
+    if (!availabilityCell) {
+      return {
+        success: false,
+        error: payload.journeyDate
+          ? `Availability not found for ${payload.journeyDate}`
+          : 'No available journey dates found',
+      };
     }
 
-    // Wait for availability to load after clicking class
-    await delay(2500);
+    console.log('[TBA-Train] Selecting journey date');
 
-    // Step 2: Click the availability date cell
-    // Structure: <td class="link"><div class="pre-avl">date</div><div class="WL">WL37</div></td>
-    // Need to click on div.pre-avl or its parent td.link
-    console.log('[TBA-Train] Looking for div.pre-avl availability cells...');
+    clickElement(availabilityCell);
 
-    let dateClicked = false;
-    const targetDay = payload.journeyDate ? new Date(payload.journeyDate).getDate() : null;
-    console.log('[TBA-Train] Target day:', targetDay);
+    // STEP 5: Wait for Book Now.
+    const bookButton = await waitForCondition(
+      () => findBookButton(targetRow),
+      TIMEOUTS.bookButton,
+      targetRow
+    );
 
-    // Find all div.pre-avl elements - these are the clickable availability date cells
-    const preAvlCells = document.querySelectorAll('div.pre-avl, td.link div.pre-avl');
-    console.log('[TBA-Train] div.pre-avl cells found:', preAvlCells.length);
-
-    for (const cell of preAvlCells) {
-      const parentTd = cell.closest('td');
-      const fullText = parentTd?.textContent?.trim() || cell.textContent?.trim() || '';
-      console.log('[TBA-Train] Availability cell text:', fullText.replace(/\n/g, ' ').substring(0, 40));
-
-      // Check if this cell matches our target date
-      if (targetDay && fullText.includes(String(targetDay))) {
-        console.log('[TBA-Train] Clicking matching date cell:', fullText.replace(/\n/g, ' ').substring(0, 30));
-        (cell as HTMLElement).click();
-        dateClicked = true;
-        break;
-      }
+    if (!bookButton) {
+      return {
+        success: false,
+        error: 'Book Now button not found after selection',
+      };
     }
 
-    // Fallback: click the first div.pre-avl that doesn't have "NOT AVAILABLE"
-    if (!dateClicked && preAvlCells.length > 0) {
-      for (const cell of preAvlCells) {
-        const parentTd = cell.closest('td');
-        const fullText = parentTd?.textContent?.trim() || '';
-        if (!fullText.includes('NOT AVAILABLE')) {
-          console.log('[TBA-Train] Clicking first available cell:', fullText.replace(/\n/g, ' ').substring(0, 30));
-          (cell as HTMLElement).click();
-          dateClicked = true;
-          break;
-        }
-      }
-    }
+    console.log('[TBA-Train] Clicking Book Now');
 
-    if (!dateClicked) {
-      console.warn('[TBA-Train] Could not find any div.pre-avl cell to click');
-    }
+    clickElement(bookButton);
 
-    await delay(1500);
+    return { success: true };
 
-    // Step 3: Click "Book Now" button
-    // Look for Book Now within the train card first
-    let bookBtn: HTMLButtonElement | null = targetRow.querySelector('button.btnDefault, button.book-btn, button[class*="book"]') as HTMLButtonElement | null;
-    
-    if (!bookBtn) {
-      // Search more broadly - Book Now might appear below the class
-      bookBtn = targetRow.querySelector('button') as HTMLButtonElement;
-      if (bookBtn && !bookBtn.textContent?.toUpperCase().includes('BOOK')) {
-        bookBtn = null;
-      }
-    }
+  } catch (error) {
+    console.error('[TBA-Train] Selection failed:', error);
 
-    if (!bookBtn) {
-      // Try finding "Book Now" button anywhere visible on page
-      const allBtns = document.querySelectorAll('button');
-      for (const btn of allBtns) {
-        const text = btn.textContent?.trim().toUpperCase() || '';
-        if (text.includes('BOOK NOW') || text === 'BOOK NOW') {
-          bookBtn = btn as HTMLButtonElement;
-          break;
-        }
-      }
-    }
-
-    if (bookBtn) {
-      console.log('[TBA-Train] Clicking Book Now:', bookBtn.textContent?.trim());
-      bookBtn.click();
-      return { success: true };
-    }
-
-    // If no Book Now button yet, wait for it (might appear after class selection)
-    await delay(2000);
-    const retryBtn = document.querySelector('button.btnDefault.train_Search, button.book-btn') as HTMLButtonElement;
-    if (retryBtn) {
-      console.log('[TBA-Train] Clicking Book Now (retry):', retryBtn.textContent?.trim());
-      retryBtn.click();
-      return { success: true };
-    }
-
-    return { success: false, error: 'Book Now button not found after class selection' };
-  } catch (e) {
-    return { success: false, error: `Train selection failed: ${(e as Error).message}` };
+    return {
+      success: false,
+      error: `Train selection failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
   }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

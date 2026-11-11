@@ -1,6 +1,5 @@
-// Train search page automator - fill source, destination, date, class, quota, submit
 
-import { SELECTORS, TIMING } from '../../shared/constants';
+import { SELECTORS } from '../../shared/constants';
 import { waitForElement, setInputValue } from '../injector';
 import type { ExtensionResponse } from '../../shared/types';
 
@@ -12,316 +11,623 @@ interface SearchPayload {
   quota: string;
 }
 
-export async function handleSearch(payload: SearchPayload): Promise<ExtensionResponse> {
-  try {
-    // Wait for search form
-    const sourceInput = await waitForElement(SELECTORS.SEARCH_SOURCE) as HTMLInputElement;
-    if (!sourceInput) {
-      return { success: false, error: 'Source station input not found' };
-    }
+const TIMEOUT = {
+  autocomplete: 2500,
+  calendar: 3000,
+  dropdown: 2500,
+  calendarUpdate: 1500,
+};
 
-    // Fill source station
-    setInputValue(sourceInput, payload.source);
-    await delay(300);
-    // Select from autocomplete
-    await selectAutocompleteItem(payload.source);
-    await delay(300);
+const CALENDAR_SELECTOR =
+  '.p-datepicker:not(.p-datepicker-inline), .ui-datepicker, .p-datepicker-panel, .p-component.p-datepicker';
 
-    // Fill destination station
-    const destInput = document.querySelector(SELECTORS.SEARCH_DESTINATION) as HTMLInputElement;
-    if (!destInput) {
-      return { success: false, error: 'Destination input not found' };
-    }
-    setInputValue(destInput, payload.destination);
-    await delay(300);
-    await selectAutocompleteItem(payload.destination);
-    await delay(300);
+const DROPDOWN_ITEMS =
+  'p-dropdownitem li, li.ui-dropdown-item, li.p-dropdown-item, li[role="option"]';
 
-    // Set date - IRCTC uses PrimeNG p-calendar (readonly input, need to click icon/input to open)
-    console.log('[TBA-Search] Setting date:', payload.date);
-    const targetDate = parseDate(payload.date);
-    console.log('[TBA-Search] Target date: day=', targetDate.day, 'month=', targetDate.month, 'year=', targetDate.year);
+const CLASS_MAP: Record<string, string[]> = {
+  '1A': ['First Class', '1A'],
+  '2A': ['2 Tier', '2A', 'AC 2'],
+  '3A': ['3 Tier', '3A', 'AC 3 Tier'],
+  '3E': ['3 Economy', '3E'],
+  'SL': ['Sleeper', 'SL'],
+  '2S': ['Second Sitting', '2S'],
+  'CC': ['Chair Car', 'CC'],
+  'EC': ['Exec Chair', 'EC'],
+  'TQ': ['TATKAL', 'Tatkal'],
+  'PT': ['PREMIUM TATKAL', 'Premium'],
+  'GN': ['GENERAL', 'General'],
+  'LD': ['LADIES', 'Ladies'],
+};
 
-    // Find p-calendar component
-    const pCalendar = document.querySelector('p-calendar') as HTMLElement;
-    console.log('[TBA-Search] p-calendar found:', !!pCalendar);
-
-    if (pCalendar) {
-      // Click the calendar icon/button to open (PrimeNG has a trigger button)
-      const calendarTrigger = pCalendar.querySelector(
-        'button, .p-datepicker-trigger, .ui-datepicker-trigger, span.p-button-icon, .p-calendar-button'
-      ) as HTMLElement;
-      const calendarInput = pCalendar.querySelector('input') as HTMLInputElement;
-      
-      // Try clicking the trigger button first, then the input
-      const clickEl = calendarTrigger || calendarInput || pCalendar;
-      console.log('[TBA-Search] Clicking calendar trigger:', clickEl.tagName, clickEl.className?.substring(0, 30));
-      clickEl.click();
-      await delay(800);
-
-      // Calendar panel appears in the DOM (might be appended to body)
-      let calendarPanel = document.querySelector(
-        '.p-datepicker:not(.p-datepicker-inline), .ui-datepicker, ' +
-        '.p-datepicker-panel, .p-component.p-datepicker'
-      );
-      // Also check inside the p-calendar itself
-      if (!calendarPanel) {
-        calendarPanel = pCalendar.querySelector('.p-datepicker, .ui-datepicker');
-      }
-      // Broadest search
-      if (!calendarPanel) {
-        calendarPanel = document.querySelector('[class*="datepicker"]:not(input):not(p-calendar)');
-      }
-
-      console.log('[TBA-Search] Calendar panel found:', !!calendarPanel, calendarPanel?.className?.substring(0, 40));
-
-      if (calendarPanel) {
-        // Navigate to correct month if needed
-        await navigateToMonth(calendarPanel, targetDate);
-        await delay(300);
-
-        // Click the correct day number
-        // PrimeNG calendar days are: <td><span class="p-ripple">28</span></td>
-        const allCells = calendarPanel.querySelectorAll('td');
-        let dayClicked = false;
-        for (const td of allCells) {
-          // Skip header row, other month, disabled
-          if (td.classList.contains('p-datepicker-other-month') || 
-              td.classList.contains('ui-datepicker-other-month')) continue;
-          const span = td.querySelector('span, a');
-          if (span && span.textContent?.trim() === String(targetDate.day)) {
-            if (!td.classList.contains('p-disabled') && !span.classList.contains('p-disabled')) {
-              console.log('[TBA-Search] Clicking day:', targetDate.day);
-              (span as HTMLElement).click();
-              dayClicked = true;
-              break;
-            }
-          }
-        }
-
-        if (!dayClicked) {
-          // Try clicking td directly
-          for (const td of allCells) {
-            if (td.textContent?.trim() === String(targetDate.day) && 
-                !td.classList.contains('p-datepicker-other-month')) {
-              console.log('[TBA-Search] Clicking day td directly:', targetDate.day);
-              td.click();
-              dayClicked = true;
-              break;
-            }
-          }
-        }
-
-        if (!dayClicked) {
-          console.warn('[TBA-Search] Could not click day', targetDate.day);
-          console.log('[TBA-Search] Calendar HTML sample:', calendarPanel.innerHTML.substring(0, 300));
-        }
-      } else {
-        console.warn('[TBA-Search] Calendar panel did not appear! Trying input click...');
-        // Last resort: click the input itself
-        if (calendarInput) {
-          calendarInput.click();
-          await delay(800);
-          // Check again
-          const retryPanel = document.querySelector('.p-datepicker, .ui-datepicker, [class*="datepicker"]:not(input)');
-          console.log('[TBA-Search] Retry calendar panel:', !!retryPanel);
-          if (retryPanel) {
-            const allCells = retryPanel.querySelectorAll('td span, td a');
-            for (const cell of allCells) {
-              if (cell.textContent?.trim() === String(targetDate.day)) {
-                (cell as HTMLElement).click();
-                console.log('[TBA-Search] Clicked day on retry:', targetDate.day);
-                break;
-              }
-            }
-          }
-        }
-      }
-    } else {
-      // No p-calendar found, try input directly
-      const dateInput = document.querySelector(SELECTORS.SEARCH_DATE) as HTMLInputElement;
-      if (dateInput) {
-        console.log('[TBA-Search] No p-calendar, using input directly');
-        dateInput.click();
-        await delay(500);
-        const formatted = `${String(targetDate.day).padStart(2, '0')}/${String(targetDate.month).padStart(2, '0')}/${targetDate.year}`;
-        setInputValue(dateInput, formatted);
-      }
-    }
-    await delay(500);
-
-    // Set class (dropdown)
-    const classDropdown = document.querySelector(SELECTORS.SEARCH_CLASS);
-    if (classDropdown) {
-      console.log('[TBA-Search] Setting class:', payload.classType, 'dropdown tag:', classDropdown.tagName);
-      await selectDropdown(classDropdown as HTMLElement, payload.classType);
-      await delay(500);
-    } else {
-      console.warn('[TBA-Search] Class dropdown not found! Trying broader search...');
-      // Try finding any p-dropdown on the page
-      const allDropdowns = document.querySelectorAll('p-dropdown');
-      console.log('[TBA-Search] Found', allDropdowns.length, 'p-dropdown elements');
-      for (const dd of allDropdowns) {
-        const label = dd.querySelector('.ui-dropdown-label, .p-dropdown-label');
-        if (label?.textContent?.includes('Class') || label?.textContent?.includes('All')) {
-          console.log('[TBA-Search] Found class dropdown by label:', label.textContent);
-          await selectDropdown(dd as HTMLElement, payload.classType);
-          await delay(500);
-          break;
-        }
-      }
-    }
-
-    // Set quota
-    const quotaDropdown = document.querySelector(SELECTORS.SEARCH_QUOTA);
-    if (quotaDropdown) {
-      console.log('[TBA-Search] Setting quota:', payload.quota);
-      await selectDropdown(quotaDropdown as HTMLElement, payload.quota);
-      await delay(500);
-    } else {
-      console.warn('[TBA-Search] Quota dropdown not found!');
-    }
-
-    await delay(200);
-
-    // Submit search
-    const submitBtn = document.querySelector(SELECTORS.SEARCH_SUBMIT) as HTMLButtonElement;
-    if (!submitBtn) {
-      // Fallback: find by text
-      const allBtns = document.querySelectorAll('button');
-      for (const btn of allBtns) {
-        const text = btn.textContent?.trim().toUpperCase() || '';
-        if (text.includes('SEARCH') || text.includes('FIND TRAIN')) {
-          console.log('[TBA-Search] Found submit by text:', btn.textContent?.trim());
-          (btn as HTMLButtonElement).click();
-          return { success: true };
-        }
-      }
-      return { success: false, error: 'Search submit button not found' };
-    }
-    console.log('[TBA-Search] Clicking submit:', submitBtn.textContent?.trim());
-    submitBtn.click();
-
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: `Search automation failed: ${(e as Error).message}` };
-  }
-}
-
-async function selectAutocompleteItem(stationCode: string): Promise<void> {
-  await delay(500); // Wait for autocomplete dropdown
-  const items = document.querySelectorAll(SELECTORS.SEARCH_AUTOCOMPLETE_ITEM);
-  for (const item of items) {
-    if (item.textContent?.includes(stationCode)) {
-      (item as HTMLElement).click();
-      return;
-    }
-  }
-  // If no autocomplete found, press Enter
-  const activeInput = document.activeElement as HTMLInputElement;
-  if (activeInput) {
-    activeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  }
-}
-
-async function selectDropdown(dropdown: HTMLElement, value: string): Promise<void> {
-  console.log('[TBA-Search] selectDropdown:', dropdown.tagName, 'value:', value);
-
-  // Handle PrimeNG dropdown (p-dropdown) or native select
-  if (dropdown.tagName === 'P-DROPDOWN') {
-    // Click the dropdown to open it
-    const trigger = dropdown.querySelector('.ui-dropdown-trigger, .p-dropdown-trigger, .ui-dropdown, .p-dropdown') as HTMLElement || dropdown;
-    trigger.click();
-    await delay(500);
-
-    // Find dropdown panel items - PrimeNG creates them in a panel
-    const items = document.querySelectorAll('p-dropdownitem li, li.ui-dropdown-item, li.p-dropdown-item, li[role="option"]');
-    console.log('[TBA-Search] Dropdown items found:', items.length);
-
-    // Class mapping for IRCTC: value code → display text contains
-    const classMap: Record<string, string[]> = {
-      '1A': ['First Class', '1A'],
-      '2A': ['2 Tier', '2A', 'AC 2'],
-      '3A': ['3 Tier', '3A', 'AC 3 Tier'],
-      '3E': ['3 Economy', '3E'],
-      'SL': ['Sleeper', 'SL'],
-      '2S': ['Second Sitting', '2S'],
-      'CC': ['Chair Car', 'CC'],
-      'EC': ['Exec Chair', 'EC'],
-      'TQ': ['TATKAL', 'Tatkal'],
-      'PT': ['PREMIUM TATKAL', 'Premium'],
-      'GN': ['GENERAL', 'General'],
-      'LD': ['LADIES', 'Ladies'],
-    };
-
-    const searchTerms = classMap[value] || [value];
-
-    for (const item of items) {
-      const text = item.textContent?.trim() || '';
-      const matched = searchTerms.some(term => text.toUpperCase().includes(term.toUpperCase()));
-      if (matched || text.includes(value)) {
-        console.log('[TBA-Search] Selecting dropdown item:', text);
-        (item as HTMLElement).click();
-        return;
-      }
-    }
-    console.warn('[TBA-Search] No match found for value:', value, '— items:', Array.from(items).map(i => i.textContent?.trim()).join(', '));
-
-    // Close dropdown if nothing matched
-    trigger.click();
-  } else if (dropdown.tagName === 'SELECT') {
-    setInputValue(dropdown as HTMLSelectElement, value);
-  }
-}
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April',
+  'May', 'June', 'July', 'August',
+  'September', 'October', 'November', 'December',
+];
 
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function parseDate(dateStr: string): { year: number; month: number; day: number } {
-  // Handle formats: "2026-05-28" or "28/05/2026" or "28-05-2026"
-  let year: number, month: number, day: number;
-  if (dateStr.includes('-') && dateStr.indexOf('-') === 4) {
-    // ISO format: 2026-05-28
+function isVisible(element: Element): boolean {
+  const html = element as HTMLElement;
+
+  return (
+    html.isConnected &&
+    html.getClientRects().length > 0 &&
+    getComputedStyle(html).visibility !== 'hidden'
+  );
+}
+
+/**
+ * Wait for an actual DOM condition instead of sleeping.
+ */
+function waitForCondition<T>(
+  condition: () => T | null | undefined | false,
+  timeout = 3000,
+  root: Node = document.body
+): Promise<T | null> {
+  const initial = condition();
+  if (initial) return Promise.resolve(initial as T);
+
+  return new Promise(resolve => {
+    let timer: ReturnType<typeof setTimeout>;
+
+    const observer = new MutationObserver(() => {
+      const result = condition();
+
+      if (result) {
+        observer.disconnect();
+        clearTimeout(timer);
+        resolve(result as T);
+      }
+    });
+
+    timer = setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, timeout);
+
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: [
+        'class',
+        'style',
+        'aria-expanded',
+        'disabled',
+      ],
+    });
+
+    // Prevent missing a change between initial check and observer setup.
+    const result = condition();
+
+    if (result) {
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve(result as T);
+    }
+  });
+}
+
+function parseDate(dateStr: string): {
+  year: number;
+  month: number;
+  day: number;
+} {
+  let year: number;
+  let month: number;
+  let day: number;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     [year, month, day] = dateStr.split('-').map(Number);
-  } else if (dateStr.includes('/')) {
-    // DD/MM/YYYY
-    [day, month, year] = dateStr.split('/').map(Number);
-  } else if (dateStr.includes('-')) {
-    // DD-MM-YYYY
-    [day, month, year] = dateStr.split('-').map(Number);
+  } else if (/^\d{2}[/-]\d{2}[/-]\d{4}$/.test(dateStr)) {
+    [day, month, year] = dateStr.split(/[/-]/).map(Number);
   } else {
-    // Fallback: try ISO
-    const d = new Date(dateStr);
-    year = d.getFullYear();
-    month = d.getMonth() + 1;
-    day = d.getDate();
+    throw new Error('Invalid date format. Use YYYY-MM-DD or DD/MM/YYYY');
   }
+
+  const date = new Date(year, month - 1, day);
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() + 1 !== month ||
+    date.getDate() !== day
+  ) {
+    throw new Error('Invalid journey date');
+  }
+
   return { year, month, day };
 }
 
-async function navigateToMonth(calendar: Element, target: { year: number; month: number; day: number }): Promise<void> {
-  // Check current displayed month/year
-  const titleEl = calendar.querySelector('.ui-datepicker-title, .p-datepicker-title');
-  if (!titleEl) return;
+function normalize(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toUpperCase();
+}
 
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'];
+/**
+ * Select station from autocomplete.
+ */
+async function selectAutocompleteItem(
+  station: string,
+  input: HTMLInputElement
+): Promise<boolean> {
+  const item = await waitForCondition(() => {
+    const items = document.querySelectorAll(
+      SELECTORS.SEARCH_AUTOCOMPLETE_ITEM
+    );
 
-  // Try navigating forward up to 12 months
+    return Array.from(items).find(item =>
+      isVisible(item) &&
+      normalize(item.textContent || '').includes(normalize(station))
+    ) || null;
+  }, TIMEOUT.autocomplete);
+
+  if (item) {
+    (item as HTMLElement).click();
+    return true;
+  }
+
+  // Preserve original Enter fallback.
+  input.focus();
+  input.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      bubbles: true,
+    })
+  );
+
+  return false;
+}
+
+/**
+ * Find the visible PrimeNG calendar panel.
+ */
+function findCalendarPanel(
+  calendar: HTMLElement
+): Element | null {
+  const globalPanel = document.querySelector(CALENDAR_SELECTOR);
+
+  if (globalPanel && isVisible(globalPanel)) {
+    return globalPanel;
+  }
+
+  const localPanel = calendar.querySelector(
+    '.p-datepicker, .ui-datepicker'
+  );
+
+  return localPanel && isVisible(localPanel)
+    ? localPanel
+    : null;
+}
+
+function isTargetMonth(
+  calendar: Element,
+  target: { year: number; month: number }
+): boolean {
+  const title = calendar.querySelector(
+    '.ui-datepicker-title, .p-datepicker-title'
+  );
+
+  const text = title?.textContent?.trim() || '';
+
+  return (
+    text.includes(MONTH_NAMES[target.month - 1]) &&
+    text.includes(String(target.year))
+  );
+}
+
+/**
+ * Navigate to target month.
+ * Re-query title after every click because Angular may update it.
+ */
+async function navigateToMonth(
+  calendar: Element,
+  target: { year: number; month: number }
+): Promise<boolean> {
   for (let i = 0; i < 12; i++) {
-    const titleText = titleEl.textContent?.trim() || '';
-    const targetMonthName = monthNames[target.month - 1];
-    if (titleText.includes(targetMonthName) && titleText.includes(String(target.year))) {
-      return; // Already on correct month
+    if (isTargetMonth(calendar, target)) {
+      return true;
     }
-    // Click next month button
-    const nextBtn = calendar.querySelector('.ui-datepicker-next, .p-datepicker-next, a[data-handler="next"]') as HTMLElement;
-    if (nextBtn) {
-      nextBtn.click();
-      await delay(200);
-    } else {
-      break;
+
+    const nextButton = calendar.querySelector(
+      '.ui-datepicker-next, .p-datepicker-next, a[data-handler="next"]'
+    ) as HTMLElement | null;
+
+    if (!nextButton || !isVisible(nextButton)) {
+      return false;
     }
+
+    const previousTitle = calendar.querySelector(
+      '.ui-datepicker-title, .p-datepicker-title'
+    )?.textContent?.trim();
+
+    nextButton.click();
+
+    await waitForCondition(() => {
+      const currentTitle = calendar.querySelector(
+        '.ui-datepicker-title, .p-datepicker-title'
+      )?.textContent?.trim();
+
+      return currentTitle && currentTitle !== previousTitle
+        ? currentTitle
+        : null;
+    }, 1200, calendar);
+  }
+
+  return isTargetMonth(calendar, target);
+}
+
+/**
+ * Select exact day in the correct month.
+ */
+function selectCalendarDay(
+  calendar: Element,
+  day: number
+): boolean {
+  const cells = calendar.querySelectorAll('td');
+
+  for (const td of cells) {
+    if (
+      td.classList.contains('p-datepicker-other-month') ||
+      td.classList.contains('ui-datepicker-other-month') ||
+      td.classList.contains('p-disabled') ||
+      td.getAttribute('aria-disabled') === 'true'
+    ) {
+      continue;
+    }
+
+    const span = td.querySelector('span, a');
+
+    if (
+      span?.textContent?.trim() === String(day) &&
+      !span.classList.contains('p-disabled')
+    ) {
+      (span as HTMLElement).click();
+      return true;
+    }
+  }
+
+  // Preserve direct TD fallback.
+  for (const td of cells) {
+    if (
+      td.textContent?.trim() === String(day) &&
+      !td.classList.contains('p-datepicker-other-month') &&
+      !td.classList.contains('ui-datepicker-other-month') &&
+      !td.classList.contains('p-disabled')
+    ) {
+      (td as HTMLElement).click();
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Set journey date.
+ */
+async function selectJourneyDate(
+  dateStr: string
+): Promise<boolean> {
+  const target = parseDate(dateStr);
+
+  const calendar = document.querySelector(
+    'p-calendar'
+  ) as HTMLElement | null;
+
+  if (!calendar) {
+    const dateInput = document.querySelector(
+      SELECTORS.SEARCH_DATE
+    ) as HTMLInputElement | null;
+
+    if (!dateInput) return false;
+
+    dateInput.click();
+
+    const formatted =
+      `${String(target.day).padStart(2, '0')}/` +
+      `${String(target.month).padStart(2, '0')}/` +
+      `${target.year}`;
+
+    setInputValue(dateInput, formatted);
+
+    return true;
+  }
+
+  const trigger = calendar.querySelector(
+    'button, .p-datepicker-trigger, .ui-datepicker-trigger, .p-calendar-button'
+  ) as HTMLElement | null;
+
+  const input = calendar.querySelector(
+    'input'
+  ) as HTMLInputElement | null;
+
+  (trigger || input || calendar).click();
+
+  let panel = await waitForCondition(
+    () => findCalendarPanel(calendar),
+    TIMEOUT.calendar
+  );
+
+  // Preserve input-click fallback.
+  if (!panel && input) {
+    input.click();
+
+    panel = await waitForCondition(
+      () => findCalendarPanel(calendar),
+      TIMEOUT.calendar
+    );
+  }
+
+  if (!panel) return false;
+
+  const monthSelected = await navigateToMonth(panel, target);
+
+  if (!monthSelected) return false;
+
+  const previousValue = input?.value;
+
+  if (!selectCalendarDay(panel, target.day)) {
+    return false;
+  }
+
+  // Allow Angular to commit the selected date.
+  if (input) {
+    await waitForCondition(
+      () => input.value && input.value !== previousValue
+        ? input.value
+        : null,
+      TIMEOUT.calendarUpdate
+    );
+  }
+
+  return true;
+}
+
+/**
+ * Select PrimeNG or native dropdown value.
+ */
+async function selectDropdown(
+  dropdown: HTMLElement,
+  value: string
+): Promise<boolean> {
+  if (dropdown.tagName === 'SELECT') {
+    const select = dropdown as HTMLSelectElement;
+
+    const option = Array.from(select.options).find(
+      option =>
+        normalize(option.value) === normalize(value) ||
+        normalize(option.textContent || '') === normalize(value)
+    );
+
+    if (!option) return false;
+
+    setInputValue(select, option.value);
+    return true;
+  }
+
+  if (dropdown.tagName !== 'P-DROPDOWN') {
+    return false;
+  }
+
+  const label = dropdown.querySelector(
+    '.ui-dropdown-label, .p-dropdown-label'
+  );
+
+  if (label && normalize(label.textContent || '').includes(normalize(value))) {
+    return true;
+  }
+
+  const trigger = dropdown.querySelector(
+    '.ui-dropdown-trigger, .p-dropdown-trigger, .ui-dropdown, .p-dropdown'
+  ) as HTMLElement | null;
+
+  (trigger || dropdown).click();
+
+  const items = await waitForCondition(() => {
+    const options = document.querySelectorAll(DROPDOWN_ITEMS);
+
+    return options.length > 0 &&
+      Array.from(options).some(isVisible)
+      ? options
+      : null;
+  }, TIMEOUT.dropdown);
+
+  if (!items) return false;
+
+  const searchTerms = CLASS_MAP[value] || [value];
+
+  const visibleItems = Array.from(items).filter(isVisible);
+
+  // Prefer exact matches before partial matches.
+  const selected =
+    visibleItems.find(item =>
+      searchTerms.some(term =>
+        normalize(item.textContent || '') === normalize(term)
+      )
+    ) ||
+    visibleItems.find(item =>
+      searchTerms.some(term =>
+        normalize(item.textContent || '').includes(normalize(term))
+      )
+    );
+
+  if (!selected) {
+    (trigger || dropdown).click();
+    return false;
+  }
+
+  (selected as HTMLElement).click();
+
+  return true;
+}
+
+/**
+ * Main search workflow.
+ */
+export async function handleSearch(
+  payload: SearchPayload
+): Promise<ExtensionResponse> {
+  try {
+    console.log('[TBA-Search] Starting search:', payload);
+
+    const targetDate = parseDate(payload.date);
+
+    // STEP 1: Source station.
+    const sourceInput = await waitForElement(
+      SELECTORS.SEARCH_SOURCE
+    ) as HTMLInputElement;
+
+    if (!sourceInput) {
+      return {
+        success: false,
+        error: 'Source station input not found',
+      };
+    }
+
+    setInputValue(sourceInput, payload.source);
+
+    await selectAutocompleteItem(payload.source, sourceInput);
+
+    // STEP 2: Destination station.
+    const destInput = await waitForCondition(
+      () => document.querySelector(
+        SELECTORS.SEARCH_DESTINATION
+      ) as HTMLInputElement | null,
+      2000
+    );
+
+    if (!destInput) {
+      return {
+        success: false,
+        error: 'Destination input not found',
+      };
+    }
+
+    setInputValue(destInput, payload.destination);
+
+    await selectAutocompleteItem(
+      payload.destination,
+      destInput
+    );
+
+    // STEP 3: Journey date.
+    console.log('[TBA-Search] Selecting date:', targetDate);
+
+    const dateSelected = await selectJourneyDate(payload.date);
+
+    if (!dateSelected) {
+      return {
+        success: false,
+        error: 'Could not select the requested journey date',
+      };
+    }
+
+    // STEP 4: Travel class.
+    const classDropdown = await waitForCondition(
+      () => document.querySelector(
+        SELECTORS.SEARCH_CLASS
+      ) as HTMLElement | null,
+      2000
+    );
+
+    if (!classDropdown) {
+      return {
+        success: false,
+        error: 'Class dropdown not found',
+      };
+    }
+
+    const classSelected = await selectDropdown(
+      classDropdown,
+      payload.classType
+    );
+
+    if (!classSelected) {
+      return {
+        success: false,
+        error: `Could not select class: ${payload.classType}`,
+      };
+    }
+
+    // STEP 5: Quota.
+    const quotaDropdown = await waitForCondition(
+      () => document.querySelector(
+        SELECTORS.SEARCH_QUOTA
+      ) as HTMLElement | null,
+      2000
+    );
+
+    if (!quotaDropdown) {
+      return {
+        success: false,
+        error: 'Quota dropdown not found',
+      };
+    }
+
+    const quotaSelected = await selectDropdown(
+      quotaDropdown,
+      payload.quota
+    );
+
+    if (!quotaSelected) {
+      return {
+        success: false,
+        error: `Could not select quota: ${payload.quota}`,
+      };
+    }
+
+    // STEP 6: Submit.
+    const submitButton = await waitForCondition(
+      () => {
+        const button = document.querySelector(
+          SELECTORS.SEARCH_SUBMIT
+        ) as HTMLButtonElement | null;
+
+        if (button && isVisible(button) && !button.disabled) {
+          return button;
+        }
+
+        // Preserve text-based fallback.
+        const buttons = document.querySelectorAll('button');
+
+        return Array.from(buttons).find(btn => {
+          const text = normalize(btn.textContent || '');
+
+          return (
+            isVisible(btn) &&
+            !btn.disabled &&
+            (text.includes('SEARCH') || text.includes('FIND TRAIN'))
+          );
+        }) as HTMLButtonElement | undefined || null;
+      },
+      3000
+    );
+
+    if (!submitButton) {
+      return {
+        success: false,
+        error: 'Search submit button not found',
+      };
+    }
+
+    console.log('[TBA-Search] Submitting search');
+
+    submitButton.click();
+
+    return { success: true };
+
+  } catch (error) {
+    console.error('[TBA-Search] Automation failed:', error);
+
+    return {
+      success: false,
+      error: `Search automation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
   }
 }
